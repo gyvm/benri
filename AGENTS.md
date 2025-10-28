@@ -1,16 +1,20 @@
 # AGENTS.md
 
-This document provides instructions for AI assistants working on this repository.
+このドキュメントは、このリポジトリで作業するAIアシスタント向けの説明書です。
 
-## Development Flow
+## 開発フロー
 
-When adding a new tool, create a new directory named after the tool. All files related to the tool, including its source code, `README.md`, and `AGENTS.md`, should be placed within this directory.
+新しいツールを追加する際は、ツール名のディレクトリを新たに作成してください。ソースコード、`README.md`、`AGENTS.md`など、ツールに関連するすべてのファイルは、このディレクトリ内に配置してください。
 
-## Version Control
+## バージョン管理
 
-- **Branch Names**: Use English for branch names.
-- **Commit Messages**: Write commit messages in Japanese.
+- **ブランチ名**: ブランチ名は英語を使用してください。
+- **コミットメッセージ**: コミットメッセージは日本語で記述してください。
 
-## Programming Languages
+## ドキュメント
 
-The primary languages used in this repository will be TypeScript and Go.
+- `README.md`、`AGENTS.md`、およびGitHubのPull Requestは日本語で記述してください。
+
+## プログラミング言語
+
+このリポジトリで使用する主な言語は、TypeScriptとGoです。

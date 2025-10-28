@@ -1,7 +1,7 @@
-# Utility Scripts
+# ユーティリティスクリプト
 
-This repository is a collection of useful CLI tools and scripts.
+このリポジトリは、便利なCLIツールやスクリプトを集めたものです。
 
-## Directory Structure
+## ディレクトリ構成
 
-Each tool is organized into its own directory. For detailed information about each tool, please refer to the `README.md` file within that tool's directory.
+各ツールは、それぞれ専用のディレクトリに整理されています。各ツールの詳細については、そのツールのディレクトリ内にある`README.md`ファイルを参照してください。
