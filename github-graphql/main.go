@@ -170,7 +170,13 @@ func printPullRequestMarkdown(pr PullRequest) {
 		}
 	}
 	if len(pr.Reviews.Nodes) > 0 {
-		firstReviewDate := pr.Reviews.Nodes[0].SubmittedAt
+		var firstReviewDate time.Time
+		// Iterate over all reviews to find the earliest one
+		for i, review := range pr.Reviews.Nodes {
+			if i == 0 || review.SubmittedAt.Before(firstReviewDate) {
+				firstReviewDate = review.SubmittedAt
+			}
+		}
 		fmt.Printf("- **Time to First Review:** %s\n", firstReviewDate.Sub(pr.CreatedAt).Round(time.Minute))
 	}
 	fmt.Println()
