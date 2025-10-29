@@ -1,153 +1,84 @@
 package main
 
 import (
-	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
 )
 
-// --- APIレスポンス用の構造体 ---
-type SentimentReport struct {
-	OverallSentiment     OverallSentiment       `json:"overall_sentiment"`
-	SentimentComposition []SentimentComposition `json:"sentiment_composition"`
-	Transcript           string                 `json:"transcript"`
-	DiarizedTranscript   string                 `json:"diarized_transcript,omitempty"`
-	TimedAnalysis        []TimedAnalysis        `json:"timed_analysis"`
+// EmotionResult はAPIから返される感情分析結果のJSON構造体です。
+type EmotionResult struct {
+	Version   string             `json:"version"`
+	Model     string             `json:"model"`
+	Language  string             `json:"language"`
+	Emotions  map[string]float64 `json:"emotions"`
+	Valence   float64            `json:"valence"`
+	Arousal   float64            `json:"arousal"`
+	Dominance float64            `json:"dominance"`
+	Notes     []string           `json:"notes"`
+	// Optional: 推定された音響系の指標
+	SpeakingRate *float64 `json:"speaking_rate,omitempty"`
+	AvgPitchHz   *float64 `json:"avg_pitch_hz,omitempty"`
+	EnergyProxy  *float64 `json:"energy_proxy,omitempty"`
+	SilenceRatio *float64 `json:"silence_ratio,omitempty"`
 }
 
-type OverallSentiment struct {
-	Sentiment string `json:"sentiment"`
-	Summary   string `json:"summary"`
-}
+func writeMarkdownReport(er EmotionResult, path string) error {
+	var builder strings.Builder
 
-type SentimentComposition struct {
-	Sentiment string `json:"sentiment"`
-	Score     int    `json:"score"`
-}
+	builder.WriteString(fmt.Sprintf("# 感情分析レポート\n\n"))
+	builder.WriteString(fmt.Sprintf("- **モデル:** %s\n", er.Model))
+	builder.WriteString(fmt.Sprintf("- **言語推定:** %s\n", er.Language))
+	builder.WriteString(fmt.Sprintf("- **バージョン:** %s\n\n", er.Version))
 
-type TimedAnalysis struct {
-	Timestamp string `json:"timestamp"`
-	Utterance string `json:"utterance"`
-	Sentiment string `json:"sentiment"`
-	Keywords  string `json:"keywords"`
-}
+	builder.WriteString("## 連続感情モデル (VAD)\n\n")
+	builder.WriteString(fmt.Sprintf("- **Valence (快-不快):** %.2f\n", er.Valence))
+	builder.WriteString(fmt.Sprintf("- **Arousal (覚醒-睡眠):** %.2f\n", er.Arousal))
+	builder.WriteString(fmt.Sprintf("- **Dominance (優位-劣位):** %.2f\n\n", er.Dominance))
 
-// buildPrompt はプロンプトを生成します。
-func buildPrompt() string {
-	return `
-以下の音声データを分析し、指定された形式で感情分析レポートを生成してください。
-
-出力形式はマークダウンのコードブロックを使わず、純粋なJSONオブジェクトのみとしてください。
-
-感情ラベルについて：
-- 以下は感情分析で使用できるラベルの例です。これらに限定されません。音声の内容に応じて、より適切な感情を自由に選択してください。
-- 基本的な感情：喜び、悲しみ、怒り、恐怖、驚き、嫌悪、中立、期待
-- ポジティブ感情：楽観的、愛情、感謝、満足、希望、安心、誇り、興奮
-- ネガティブ感情：失望、後悔、不安、焦り、疲れ、イライラ、沈み込み、虚無感
-- その他：迷い、困惑、同情、尊敬、興味、好奇心など
-
-JSONスキーマ：
-{
-  "overall_sentiment": {
-    "sentiment": "ポジティブ | ネガティブ | ニュートラル（音声全体の総合的な感情分類）",
-    "summary": "感情の理由の短い要約"
-  },
-  "sentiment_composition": [
-    {"sentiment": "喜び", "score": 35},
-    {"sentiment": "楽観的", "score": 30},
-    {"sentiment": "期待", "score": 20},
-    {"sentiment": "中立", "score": 15}
-  ],
-  "transcript": "音声の完全な文字起こしテキスト。",
-  "timed_analysis": [
-    {
-      "timestamp": "00:00-00:03",
-      "utterance": "こんにちは、今日はとても良い天気ですね。",
-      "sentiment": "喜び",
-      "keywords": "良い天気、明るい"
-    }
-  ]
-}
-
-重要：
-- sentiment_composition内の各感情のscoreは0-100の値を指定し、合計が100になるようにしてください。
-- もしタイムスタンプの取得が不可能であれば、"timed_analysis" は空の配列 '[]' にしてください。
-- transcriptフィールドには音声の完全な文字起こしを含めてください。
-`
-}
-
-// generateMarkdownはSentimentReportからMarkdown文字列を生成します。
-func generateMarkdown(report SentimentReport, audioFilePath, modelName, apiResponseBody string) string {
-	var md strings.Builder
-
-	md.WriteString("# 感情分析レポート\n\n")
-	md.WriteString(fmt.Sprintf("- **ファイル名:** `%s`\n", filepath.Base(audioFilePath)))
-	md.WriteString(fmt.Sprintf("- **分析日時:** `%s`\n", time.Now().Format("2006-01-02 15:04:05")))
-	md.WriteString(fmt.Sprintf("- **使用モデル:** `%s`\n\n", modelName))
-
-	md.WriteString("## 総合的な感情\n\n")
-	md.WriteString(fmt.Sprintf("この音声は全体的に **%s** な印象です。\n\n", report.OverallSentiment.Sentiment))
-	md.WriteString(fmt.Sprintf("> %s\n\n", report.OverallSentiment.Summary))
-
-	md.WriteString("## 感情の構成比\n\n")
-	md.WriteString("| 感情 | 割合（%） |\n")
-	md.WriteString("| :--- | :---: |\n")
-	for _, s := range report.SentimentComposition {
-		md.WriteString(fmt.Sprintf("| %s | %d |\n", s.Sentiment, s.Score))
+	builder.WriteString("## 離散感情スコア\n\n")
+	for k, v := range er.Emotions {
+		builder.WriteString(fmt.Sprintf("- %s: %.2f\n", k, v))
 	}
-	md.WriteString("\n")
+	builder.WriteString("\n")
 
-	if len(report.TimedAnalysis) > 0 {
-		md.WriteString("## 発言ごとの感情分析 (時系列)\n\n")
-		md.WriteString("| 時間 (秒) | 発言内容 | 感情 | 補足・キーワード |\n")
-		md.WriteString("|:---|:---|:---|:---|\n")
-		for _, t := range report.TimedAnalysis {
-			md.WriteString(fmt.Sprintf("| `%s` | `%s` | %s | %s |\n", t.Timestamp, t.Utterance, t.Sentiment, t.Keywords))
+	if len(er.Notes) > 0 {
+		builder.WriteString("## 注記\n\n")
+		for _, n := range er.Notes {
+			builder.WriteString(fmt.Sprintf("- %s\n", n))
 		}
-		md.WriteString("\n")
+		builder.WriteString("\n")
 	}
 
-	md.WriteString("---\n\n")
-	md.WriteString("## 音声の文字起こし\n\n")
-	md.WriteString(fmt.Sprintf("```text\n%s\n```\n\n", report.Transcript))
-
-	if report.DiarizedTranscript != "" {
-		md.WriteString("---\n\n")
-		md.WriteString("## 話者分離済み文字起こし\n\n")
-		md.WriteString(fmt.Sprintf("```text\n%s\n```\n\n", report.DiarizedTranscript))
+	hasAcoustics := er.SpeakingRate != nil || er.AvgPitchHz != nil || er.EnergyProxy != nil || er.SilenceRatio != nil
+	if hasAcoustics {
+		builder.WriteString("## 音響分析（推定値）\n\n")
+		if er.SpeakingRate != nil {
+			builder.WriteString(fmt.Sprintf("- **話速 (単語/分):** %.2f\n", *er.SpeakingRate))
+		}
+		if er.AvgPitchHz != nil {
+			builder.WriteString(fmt.Sprintf("- **平均ピッチ (Hz):** %.2f\n", *er.AvgPitchHz))
+		}
+		if er.EnergyProxy != nil {
+			builder.WriteString(fmt.Sprintf("- **エネルギープロキシ:** %.2f\n", *er.EnergyProxy))
+		}
+		if er.SilenceRatio != nil {
+			builder.WriteString(fmt.Sprintf("- **無音比率:** %.2f\n", *er.SilenceRatio))
+		}
+		builder.WriteString("\n")
 	}
 
-	md.WriteString("---\n\n")
-	md.WriteString("## APIレスポンス\n\n")
-	md.WriteString("```json\n")
-	md.WriteString(apiResponseBody)
-	md.WriteString("\n```\n")
-
-	return md.String()
-}
-
-// getMimeTypeはファイルパスからMIMEタイプを判別します。
-func getMimeType(filePath string) string {
-	ext := strings.ToLower(filepath.Ext(filePath))
-	switch ext {
-	case ".mp3":
-		return "mp3"
-	case ".wav":
-		return "wav"
-	default:
-		return "wav"
-	}
+	return os.WriteFile(path, []byte(builder.String()), 0644)
 }
 
 func main() {
@@ -184,22 +115,116 @@ func runAnalysis() {
 		os.Exit(1)
 	}
 	audioB64 := base64.StdEncoding.EncodeToString(raw)
-	fmt.Printf("音声ファイルを読み込みました (%d bytes)\n", len(raw))
 
-	// ファイル拡張子からオーディオフォーマットを判定
-	audioFormat := getMimeType(inFile)
-	fmt.Printf("オーディオフォーマット: %s\n", audioFormat)
-
-	// 2) gpt-4o-audio API にリクエストを送信
-	result, apiResponseBody, err := analyzeEmotionWithGPT4oAudio(apiKey, audioB64, audioFormat)
+	// 2) Realtime WebSocket 接続
+	dialer := websocket.Dialer{
+		TLSClientConfig:  &tls.Config{},
+		HandshakeTimeout: 30 * time.Second,
+	}
+	url := "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview"
+	headers := map[string][]string{
+		"Authorization": {"Bearer " + apiKey},
+	}
+	conn, _, err := dialer.Dial(url, headers)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "エラー: 感情分析に失敗しました: %v\n", err)
+		fmt.Fprintf(os.Stderr, "エラー: WebSocket接続に失敗しました: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+	fmt.Println("WebSocket接続が確立されました。")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	// 3) セッション初期化（構造化出力のスキーマを提示）
+	schema := getSchema()
+	initMsg := map[string]any{
+		"type": "response.create",
+		"response": map[string]any{
+			"modalities":   []string{"text"}, // 返答はJSONテキスト想定
+			"instructions": "次の音声の話者感情を推定し、指定のJSONスキーマにstrict準拠で返してください。\n- emotions: joy,sadness,anger,fear,surprise,disgust,neutral を 0.0〜1.0\n- valence(-1..+1), arousal(0..1), dominance(0..1)\n- 音響上の傾向も可能なら出す（speaking_rate, avg_pitch_hz など）\n- notes は日本語で短く根拠を書く",
+			"response_format": map[string]any{
+				"type": "json_schema",
+				"json_schema": map[string]any{
+					"name":   "EmotionResult",
+					"strict": true,
+					"schema": schema,
+				},
+			},
+		},
+	}
+	if err := conn.WriteJSON(initMsg); err != nil {
+		fmt.Fprintf(os.Stderr, "エラー: 初期化メッセージの送信に失敗しました: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("初期化メッセージを送信しました。")
+
+	// 4) 音声ペイロード送信
+	audioEvt := map[string]any{
+		"type":  "input_audio_buffer.append",
+		"audio": audioB64,
+	}
+	if err := conn.WriteJSON(audioEvt); err != nil {
+		fmt.Fprintf(os.Stderr, "エラー: 音声データの送信に失敗しました: %v\n", err)
+		os.Exit(1)
+	}
+	if err := conn.WriteJSON(map[string]any{"type": "input_audio_buffer.commit"}); err != nil {
+		fmt.Fprintf(os.Stderr, "エラー: 音声コミットの送信に失敗しました: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("音声データを送信しました。応答を待っています...")
+
+	// 5) 応答受信
+	var result EmotionResult
+	jsonStr := ""
+readLoop:
+	for {
+		if ctx.Err() != nil {
+			fmt.Fprintln(os.Stderr, "エラー: タイムアウトしました。")
+			os.Exit(1)
+		}
+
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "エラー: メッセージの受信に失敗しました: %v\n", err)
+			os.Exit(1)
+		}
+
+		var env struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(msg, &env); err != nil {
+			fmt.Fprintf(os.Stderr, "警告: 不明なメッセージをデコードできませんでした: %v\n", err)
+			continue
+		}
+
+		switch env.Type {
+		case "response.text.delta":
+			var delta struct {
+				Delta string `json:"delta"`
+			}
+			if err := json.Unmarshal(msg, &delta); err == nil {
+				jsonStr += delta.Delta
+			}
+		case "response.done", "response.completed": // 互換性のため両方見る
+			fmt.Println("分析が完了しました。")
+			break readLoop
+		case "error":
+			fmt.Fprintf(os.Stderr, "エラー: APIからエラーが返されました: %s\n", string(msg))
+			os.Exit(1)
+		}
+	}
+
+	// 6) JSONの抽出とパース
+	fullJSON := extractJSON(jsonStr)
+	if err := json.Unmarshal([]byte(fullJSON), &result); err != nil {
+		fmt.Fprintf(os.Stderr, "エラー: 結果JSONのパースに失敗しました: %v\n", err)
+		fmt.Fprintf(os.Stderr, "受信した文字列: %s\n", jsonStr)
 		os.Exit(1)
 	}
 
-	// 3) Markdownレポートを生成してファイルに書き込む
-	markdownContent := generateMarkdown(*result, inFile, "gpt-4o-audio-preview", apiResponseBody)
-	if err := os.WriteFile(*outFile, []byte(markdownContent), 0644); err != nil {
+	// 7) Markdownレポートを生成してファイルに書き込む
+	if err := writeMarkdownReport(result, *outFile); err != nil {
 		fmt.Fprintf(os.Stderr, "エラー: レポートの書き込みに失敗しました: %v\n", err)
 		os.Exit(1)
 	}
@@ -207,112 +232,29 @@ func runAnalysis() {
 	fmt.Println("正常に完了しました。レポートが", *outFile, "に保存されました。")
 }
 
-func analyzeEmotionWithGPT4oAudio(apiKey string, audioB64 string, audioFormat string) (*SentimentReport, string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	// プロンプトを生成
-	prompt := buildPrompt()
-
-	// リクエストボディを構築
-	requestBody := map[string]interface{}{
-		"model": "gpt-4o-audio-preview",
-		"messages": []map[string]interface{}{
-			{
-				"role": "user",
-				"content": []map[string]interface{}{
-					{
-						"type": "text",
-						"text": prompt,
-					},
-					{
-						"type": "input_audio",
-						"input_audio": map[string]interface{}{
-							"data":   audioB64,
-							"format": audioFormat,
-						},
-					},
-				},
-			},
+func getSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"version":   map[string]any{"type": "string"},
+			"model":     map[string]any{"type": "string"},
+			"language":  map[string]any{"type": "string"},
+			"emotions":  map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "number"}},
+			"valence":   map[string]any{"type": "number"},
+			"arousal":   map[string]any{"type": "number"},
+			"dominance": map[string]any{"type": "number"},
+			"notes":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"speaking_rate": map[string]any{"type": "number"},
+			"avg_pitch_hz":  map[string]any{"type": "number"},
+			"energy_proxy":  map[string]any{"type": "number"},
+			"silence_ratio": map[string]any{"type": "number"},
 		},
+		"required": []string{"version", "model", "language", "emotions", "valence", "arousal", "dominance"},
+		"additionalProperties": false,
 	}
-
-	// JSONにエンコード
-	bodyBytes, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, "", fmt.Errorf("リクエストボディのJSONエンコードに失敗: %w", err)
-	}
-
-	// HTTPリクエストを作成
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, "", fmt.Errorf("HTTPリクエストの作成に失敗: %w", err)
-	}
-
-	// ヘッダを設定
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	// リクエストを送信
-	fmt.Println("gpt-4o-audio APIにリクエストを送信中...")
-	fmt.Println("（大容量ファイルの場合、処理に数分かかる場合があります）")
-	client := &http.Client{Timeout: 2 * time.Minute}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, "", fmt.Errorf("APIリクエストに失敗: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// レスポンスボディを読み込む
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, "", fmt.Errorf("レスポンスボディの読み込みに失敗: %w", err)
-	}
-
-	// ステータスコードをチェック
-	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("APIエラー (ステータスコード: %d): %s", resp.StatusCode, string(respBody))
-	}
-
-	// レスポンスをパース
-	var chatResponse struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-
-	if err := json.Unmarshal(respBody, &chatResponse); err != nil {
-		return nil, "", fmt.Errorf("レスポンスJSONのパースに失敗: %w", err)
-	}
-
-	if len(chatResponse.Choices) == 0 {
-		return nil, "", fmt.Errorf("APIがmessagesを返しませんでした")
-	}
-
-	// JSONの抽出とパース
-	content := chatResponse.Choices[0].Message.Content
-	fullJSON := extractJSON(content)
-
-	// APIレスポンスボディを整形して保存
-	apiResponseBody := fullJSON
-
-	// JSONをパース（コードブロック削除）
-	cleanedJSON := strings.TrimPrefix(fullJSON, "```json")
-	cleanedJSON = strings.TrimSuffix(cleanedJSON, "```")
-	cleanedJSON = strings.TrimSpace(cleanedJSON)
-
-	var result SentimentReport
-	if err := json.Unmarshal([]byte(cleanedJSON), &result); err != nil {
-		return nil, apiResponseBody, fmt.Errorf("結果JSONのパースに失敗: %w (内容: %s)", err, cleanedJSON)
-	}
-
-	fmt.Println("分析が完了しました。")
-	return &result, apiResponseBody, nil
 }
 
-// extractJSON は、APIからの応答に含まれるJSON部分を抽出します。
+// extractJSON は、APIからのストリームデータに含まれるJSON部分を抽出します。
 func extractJSON(raw string) string {
 	start := strings.Index(raw, "{")
 	end := strings.LastIndex(raw, "}")
