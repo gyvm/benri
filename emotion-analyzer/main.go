@@ -124,7 +124,6 @@ func runAnalysis() {
 	url := "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview"
 	headers := map[string][]string{
 		"Authorization": {"Bearer " + apiKey},
-		"OpenAI-Beta":   {"realtime=v1"},
 	}
 	conn, _, err := dialer.Dial(url, headers)
 	if err != nil {
