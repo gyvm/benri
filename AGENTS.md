@@ -39,3 +39,7 @@ Goプロジェクトに新しいライブラリ（依存関係）を追加する
     ```bash
     go mod tidy
     ```
+
+## Secrets Management
+
+For tools requiring secrets like API tokens, use a `.env` file to load them as environment variables. The `github.com/joho/godotenv` Go package is suitable for this.
