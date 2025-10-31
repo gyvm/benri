@@ -1,0 +1,5 @@
+# Binaries
+audio-sentiment
+
+# Environment variables
+.env
