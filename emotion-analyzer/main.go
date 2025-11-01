@@ -17,21 +17,30 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// EmotionResult はAPIから返される感情分析結果のJSON構造体です。
-type EmotionResult struct {
-	Version   string             `json:"version"`
-	Model     string             `json:"model"`
-	Language  string             `json:"language"`
-	Emotions  map[string]float64 `json:"emotions"`
-	Valence   float64            `json:"valence"`
-	Arousal   float64            `json:"arousal"`
-	Dominance float64            `json:"dominance"`
-	Notes     []string           `json:"notes"`
-	// Optional: 推定された音響系の指標
-	SpeakingRate *float64 `json:"speaking_rate,omitempty"`
-	AvgPitchHz   *float64 `json:"avg_pitch_hz,omitempty"`
-	EnergyProxy  *float64 `json:"energy_proxy,omitempty"`
-	SilenceRatio *float64 `json:"silence_ratio,omitempty"`
+// --- APIレスポンス用の構造体 ---
+type SentimentReport struct {
+	OverallSentiment     OverallSentiment       `json:"overall_sentiment"`
+	SentimentComposition []SentimentComposition `json:"sentiment_composition"`
+	Transcript           string                 `json:"transcript"`
+	DiarizedTranscript   string                 `json:"diarized_transcript,omitempty"`
+	TimedAnalysis        []TimedAnalysis        `json:"timed_analysis"`
+}
+
+type OverallSentiment struct {
+	Sentiment string `json:"sentiment"`
+	Summary   string `json:"summary"`
+}
+
+type SentimentComposition struct {
+	Sentiment string `json:"sentiment"`
+	Score     int    `json:"score"`
+}
+
+type TimedAnalysis struct {
+	Timestamp string `json:"timestamp"`
+	Utterance string `json:"utterance"`
+	Sentiment string `json:"sentiment"`
+	Keywords  string `json:"keywords"`
 }
 
 // buildPrompt はプロンプトを生成します。
@@ -41,132 +50,104 @@ func buildPrompt() string {
 
 出力形式はマークダウンのコードブロックを使わず、純粋なJSONオブジェクトのみとしてください。
 
-感情分析について：
-- emotions フィールドには、以下の 7 つの基本感情を 0.0～1.0 の値で指定してください：
-  - joy（喜び）
-  - sadness（悲しみ）
-  - anger（怒り）
-  - fear（恐怖）
-  - surprise（驚き）
-  - disgust（嫌悪）
-  - neutral（中立）
-  各感情スコアの合計が 1.0 になるようにしてください。
+感情ラベルについて：
+- 以下は感情分析で使用できるラベルの例です。これらに限定されません。音声の内容に応じて、より適切な感情を自由に選択してください。
+- 基本的な感情：喜び、悲しみ、怒り、恐怖、驚き、嫌悪、中立、期待
+- ポジティブ感情：楽観的、愛情、感謝、満足、希望、安心、誇り、興奮
+- ネガティブ感情：失望、後悔、不安、焦り、疲れ、イライラ、沈み込み、虚無感
+- その他：迷い、困惑、同情、尊敬、興味、好奇心など
 
-- valence：感情価（-1～+1）
-  - 負の値：不快な感情
-  - 正の値：快い感情
-  - 0：中立
-
-- arousal：覚醒度（0～1）
-  - 低い値：落ち着いた、リラックスした状態
-  - 高い値：興奮した、活気のある状態
-
-- dominance：優位度（0～1）
-  - 低い値：受け身的、従属的な印象
-  - 高い値：支配的、主導的な印象
-
-- speaking_rate：推定話速（単語/分）
-- avg_pitch_hz：推定平均ピッチ（Hz）
-- energy_proxy：エネルギー指標（0～1）
-- silence_ratio：無音比率（0～1）
-- notes：分析の根拠を日本語で簡潔に記載
-
-JSONスキーマ例：
+JSONスキーマ：
 {
-  "version": "1.0",
-  "model": "gpt-4o-audio-preview",
-  "language": "ja",
-  "emotions": {
-    "joy": 0.35,
-    "sadness": 0.05,
-    "anger": 0.0,
-    "fear": 0.0,
-    "surprise": 0.15,
-    "disgust": 0.0,
-    "neutral": 0.45
+  "overall_sentiment": {
+    "sentiment": "ポジティブ | ネガティブ | ニュートラル（音声全体の総合的な感情分類）",
+    "summary": "感情の理由の短い要約"
   },
-  "valence": 0.6,
-  "arousal": 0.7,
-  "dominance": 0.5,
-  "speaking_rate": 150,
-  "avg_pitch_hz": 200,
-  "energy_proxy": 0.8,
-  "silence_ratio": 0.1,
-  "notes": ["音声は明るく、活気のあるトーン。複数の感情が混在しているが、全体的には前向きな印象。"]
+  "sentiment_composition": [
+    {"sentiment": "喜び", "score": 35},
+    {"sentiment": "楽観的", "score": 30},
+    {"sentiment": "期待", "score": 20},
+    {"sentiment": "中立", "score": 15}
+  ],
+  "transcript": "音声の完全な文字起こしテキスト。",
+  "timed_analysis": [
+    {
+      "timestamp": "00:00-00:03",
+      "utterance": "こんにちは、今日はとても良い天気ですね。",
+      "sentiment": "喜び",
+      "keywords": "良い天気、明るい"
+    }
+  ]
 }
 
 重要：
-- emotions オブジェクトのスコアの合計が 1.0 になることを確認してください。
-- notes は配列で、複数の根拠がある場合は複数要素を含められます。
+- sentiment_composition内の各感情のscoreは0-100の値を指定し、合計が100になるようにしてください。
+- もしタイムスタンプの取得が不可能であれば、"timed_analysis" は空の配列 '[]' にしてください。
+- transcriptフィールドには音声の完全な文字起こしを含めてください。
 `
 }
 
-func writeMarkdownReport(er EmotionResult, audioFilePath string, apiResponseBody string) string {
-	var builder strings.Builder
+// generateMarkdownはSentimentReportからMarkdown文字列を生成します。
+func generateMarkdown(report SentimentReport, audioFilePath, modelName, apiResponseBody string) string {
+	var md strings.Builder
 
-	builder.WriteString("# 感情分析レポート\n\n")
-	builder.WriteString(fmt.Sprintf("- **ファイル名:** `%s`\n", filepath.Base(audioFilePath)))
-	builder.WriteString(fmt.Sprintf("- **分析日時:** `%s`\n", time.Now().Format("2006-01-02 15:04:05")))
-	builder.WriteString(fmt.Sprintf("- **使用モデル:** `%s`\n", er.Model))
-	builder.WriteString(fmt.Sprintf("- **言語推定:** `%s`\n\n", er.Language))
+	md.WriteString("# 感情分析レポート\n\n")
+	md.WriteString(fmt.Sprintf("- **ファイル名:** `%s`\n", filepath.Base(audioFilePath)))
+	md.WriteString(fmt.Sprintf("- **分析日時:** `%s`\n", time.Now().Format("2006-01-02 15:04:05")))
+	md.WriteString(fmt.Sprintf("- **使用モデル:** `%s`\n\n", modelName))
 
-	builder.WriteString("## 連続感情モデル (VAD)\n\n")
-	builder.WriteString(fmt.Sprintf("- **Valence (快-不快):** %.2f (負=不快、正=快)\n", er.Valence))
-	builder.WriteString(fmt.Sprintf("- **Arousal (覚醒-睡眠):** %.2f (低=リラックス、高=興奮)\n", er.Arousal))
-	builder.WriteString(fmt.Sprintf("- **Dominance (優位-劣位):** %.2f (低=受け身、高=支配的)\n\n", er.Dominance))
+	md.WriteString("## 総合的な感情\n\n")
+	md.WriteString(fmt.Sprintf("この音声は全体的に **%s** な印象です。\n\n", report.OverallSentiment.Sentiment))
+	md.WriteString(fmt.Sprintf("> %s\n\n", report.OverallSentiment.Summary))
 
-	builder.WriteString("## 離散感情スコア\n\n")
-	builder.WriteString("| 感情 | スコア |\n")
-	builder.WriteString("| :--- | :---: |\n")
-
-	// 感情スコアを表示
-	emotionLabels := []string{"joy", "sadness", "anger", "fear", "surprise", "disgust", "neutral"}
-	emotionNames := map[string]string{
-		"joy":      "喜び",
-		"sadness":  "悲しみ",
-		"anger":    "怒り",
-		"fear":     "恐怖",
-		"surprise": "驚き",
-		"disgust":  "嫌悪",
-		"neutral":  "中立",
+	md.WriteString("## 感情の構成比\n\n")
+	md.WriteString("| 感情 | 割合（%） |\n")
+	md.WriteString("| :--- | :---: |\n")
+	for _, s := range report.SentimentComposition {
+		md.WriteString(fmt.Sprintf("| %s | %d |\n", s.Sentiment, s.Score))
 	}
-	for _, label := range emotionLabels {
-		if score, ok := er.Emotions[label]; ok {
-			builder.WriteString(fmt.Sprintf("| %s (%s) | %.3f |\n", emotionNames[label], label, score))
+	md.WriteString("\n")
+
+	if len(report.TimedAnalysis) > 0 {
+		md.WriteString("## 発言ごとの感情分析 (時系列)\n\n")
+		md.WriteString("| 時間 (秒) | 発言内容 | 感情 | 補足・キーワード |\n")
+		md.WriteString("|:---|:---|:---|:---|\n")
+		for _, t := range report.TimedAnalysis {
+			md.WriteString(fmt.Sprintf("| `%s` | `%s` | %s | %s |\n", t.Timestamp, t.Utterance, t.Sentiment, t.Keywords))
 		}
-	}
-	builder.WriteString("\n")
-
-	builder.WriteString("## 音響分析（推定値）\n\n")
-	if er.SpeakingRate != nil {
-		builder.WriteString(fmt.Sprintf("- **話速:** %.1f 単語/分\n", *er.SpeakingRate))
-	}
-	if er.AvgPitchHz != nil {
-		builder.WriteString(fmt.Sprintf("- **平均ピッチ:** %.1f Hz\n", *er.AvgPitchHz))
-	}
-	if er.EnergyProxy != nil {
-		builder.WriteString(fmt.Sprintf("- **エネルギー:** %.3f\n", *er.EnergyProxy))
-	}
-	if er.SilenceRatio != nil {
-		builder.WriteString(fmt.Sprintf("- **無音比率:** %.3f\n", *er.SilenceRatio))
-	}
-	builder.WriteString("\n")
-
-	if len(er.Notes) > 0 {
-		builder.WriteString("## 分析の根拠\n\n")
-		for _, note := range er.Notes {
-			builder.WriteString(fmt.Sprintf("- %s\n", note))
-		}
-		builder.WriteString("\n")
+		md.WriteString("\n")
 	}
 
-	builder.WriteString("---\n\n")
-	builder.WriteString("## APIレスポンス\n\n")
-	builder.WriteString("```json\n")
-	builder.WriteString(apiResponseBody)
-	builder.WriteString("\n```\n")
+	md.WriteString("---\n\n")
+	md.WriteString("## 音声の文字起こし\n\n")
+	md.WriteString(fmt.Sprintf("```text\n%s\n```\n\n", report.Transcript))
 
-	return builder.String()
+	if report.DiarizedTranscript != "" {
+		md.WriteString("---\n\n")
+		md.WriteString("## 話者分離済み文字起こし\n\n")
+		md.WriteString(fmt.Sprintf("```text\n%s\n```\n\n", report.DiarizedTranscript))
+	}
+
+	md.WriteString("---\n\n")
+	md.WriteString("## APIレスポンス\n\n")
+	md.WriteString("```json\n")
+	md.WriteString(apiResponseBody)
+	md.WriteString("\n```\n")
+
+	return md.String()
+}
+
+// getMimeTypeはファイルパスからMIMEタイプを判別します。
+func getMimeType(filePath string) string {
+	ext := strings.ToLower(filepath.Ext(filePath))
+	switch ext {
+	case ".mp3":
+		return "mp3"
+	case ".wav":
+		return "wav"
+	default:
+		return "wav"
+	}
 }
 
 func main() {
@@ -206,11 +187,7 @@ func runAnalysis() {
 	fmt.Printf("音声ファイルを読み込みました (%d bytes)\n", len(raw))
 
 	// ファイル拡張子からオーディオフォーマットを判定
-	ext := strings.ToLower(filepath.Ext(inFile))
-	audioFormat := "wav" // デフォルトは wav
-	if ext == ".mp3" {
-		audioFormat = "mp3"
-	}
+	audioFormat := getMimeType(inFile)
 	fmt.Printf("オーディオフォーマット: %s\n", audioFormat)
 
 	// 2) gpt-4o-audio API にリクエストを送信
@@ -221,7 +198,7 @@ func runAnalysis() {
 	}
 
 	// 3) Markdownレポートを生成してファイルに書き込む
-	markdownContent := writeMarkdownReport(*result, inFile, apiResponseBody)
+	markdownContent := generateMarkdown(*result, inFile, "gpt-4o-audio-preview", apiResponseBody)
 	if err := os.WriteFile(*outFile, []byte(markdownContent), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "エラー: レポートの書き込みに失敗しました: %v\n", err)
 		os.Exit(1)
@@ -230,7 +207,7 @@ func runAnalysis() {
 	fmt.Println("正常に完了しました。レポートが", *outFile, "に保存されました。")
 }
 
-func analyzeEmotionWithGPT4oAudio(apiKey string, audioB64 string, audioFormat string) (*EmotionResult, string, error) {
+func analyzeEmotionWithGPT4oAudio(apiKey string, audioB64 string, audioFormat string) (*SentimentReport, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -320,9 +297,14 @@ func analyzeEmotionWithGPT4oAudio(apiKey string, audioB64 string, audioFormat st
 	// APIレスポンスボディを整形して保存
 	apiResponseBody := fullJSON
 
-	var result EmotionResult
-	if err := json.Unmarshal([]byte(fullJSON), &result); err != nil {
-		return nil, apiResponseBody, fmt.Errorf("結果JSONのパースに失敗: %w (内容: %s)", err, fullJSON)
+	// JSONをパース（コードブロック削除）
+	cleanedJSON := strings.TrimPrefix(fullJSON, "```json")
+	cleanedJSON = strings.TrimSuffix(cleanedJSON, "```")
+	cleanedJSON = strings.TrimSpace(cleanedJSON)
+
+	var result SentimentReport
+	if err := json.Unmarshal([]byte(cleanedJSON), &result); err != nil {
+		return nil, apiResponseBody, fmt.Errorf("結果JSONのパースに失敗: %w (内容: %s)", err, cleanedJSON)
 	}
 
 	fmt.Println("分析が完了しました。")
