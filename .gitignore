@@ -18,3 +18,5 @@ pnpm-debug.log*
 *.test
 *.out
 vendor/
+
+**/.env
