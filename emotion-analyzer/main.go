@@ -147,7 +147,7 @@ func analyzeEmotionWithGPT4oAudio(apiKey string, audioB64 string) (*EmotionResul
 				"content": []map[string]interface{}{
 					{
 						"type": "text",
-						"text": "次の音声の話者感情を推定し、指定のJSONスキーマにstrict準拠で返してください。\n- emotions: joy,sadness,anger,fear,surprise,disgust,neutral を 0.0〜1.0\n- valence(-1..+1), arousal(0..1), dominance(0..1)\n- 音響上の傾向も可能なら出す（speaking_rate, avg_pitch_hz など）\n- notes は日本語で短く根拠を書く",
+						"text": "次の音声の話者感情を分析し、以下の情報をJSON形式で返してください。JSONオブジェクトのみを返し、他のテキストは不要です:\n{\n  \"version\": \"1.0\",\n  \"model\": \"gpt-4o-audio-preview\",\n  \"language\": \"ja\",\n  \"emotions\": {\n    \"joy\": 0.0,\n    \"sadness\": 0.0,\n    \"anger\": 0.0,\n    \"fear\": 0.0,\n    \"surprise\": 0.0,\n    \"disgust\": 0.0,\n    \"neutral\": 0.5\n  },\n  \"valence\": 0.0,\n  \"arousal\": 0.5,\n  \"dominance\": 0.5,\n  \"notes\": [\"分析の根拠を日本語で簡潔に記載\"]\n}",
 					},
 					{
 						"type": "input_audio",
@@ -157,14 +157,6 @@ func analyzeEmotionWithGPT4oAudio(apiKey string, audioB64 string) (*EmotionResul
 						},
 					},
 				},
-			},
-		},
-		"response_format": map[string]interface{}{
-			"type": "json_schema",
-			"json_schema": map[string]interface{}{
-				"name":   "EmotionResult",
-				"strict": true,
-				"schema": getSchema(),
 			},
 		},
 	}
