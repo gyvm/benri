@@ -1,18 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
 )
 
@@ -36,7 +37,7 @@ type EmotionResult struct {
 func writeMarkdownReport(er EmotionResult, path string) error {
 	var builder strings.Builder
 
-	builder.WriteString(fmt.Sprintf("# 感情分析レポート\n\n"))
+	builder.WriteString("# 感情分析レポート\n\n")
 	builder.WriteString(fmt.Sprintf("- **モデル:** %s\n", er.Model))
 	builder.WriteString(fmt.Sprintf("- **言語推定:** %s\n", er.Language))
 	builder.WriteString(fmt.Sprintf("- **バージョン:** %s\n\n", er.Version))
@@ -115,116 +116,17 @@ func runAnalysis() {
 		os.Exit(1)
 	}
 	audioB64 := base64.StdEncoding.EncodeToString(raw)
+	fmt.Printf("音声ファイルを読み込みました (%d bytes)\n", len(raw))
 
-	// 2) Realtime WebSocket 接続
-	dialer := websocket.Dialer{
-		TLSClientConfig:  &tls.Config{},
-		HandshakeTimeout: 30 * time.Second,
-	}
-	url := "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview"
-	headers := map[string][]string{
-		"Authorization": {"Bearer " + apiKey},
-	}
-	conn, _, err := dialer.Dial(url, headers)
+	// 2) gpt-4o-audio API にリクエストを送信
+	result, err := analyzeEmotionWithGPT4oAudio(apiKey, audioB64)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "エラー: WebSocket接続に失敗しました: %v\n", err)
-		os.Exit(1)
-	}
-	defer conn.Close()
-	fmt.Println("WebSocket接続が確立されました。")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	// 3) セッション初期化（構造化出力のスキーマを提示）
-	schema := getSchema()
-	initMsg := map[string]any{
-		"type": "response.create",
-		"response": map[string]any{
-			"modalities":   []string{"text"}, // 返答はJSONテキスト想定
-			"instructions": "次の音声の話者感情を推定し、指定のJSONスキーマにstrict準拠で返してください。\n- emotions: joy,sadness,anger,fear,surprise,disgust,neutral を 0.0〜1.0\n- valence(-1..+1), arousal(0..1), dominance(0..1)\n- 音響上の傾向も可能なら出す（speaking_rate, avg_pitch_hz など）\n- notes は日本語で短く根拠を書く",
-			"response_format": map[string]any{
-				"type": "json_schema",
-				"json_schema": map[string]any{
-					"name":   "EmotionResult",
-					"strict": true,
-					"schema": schema,
-				},
-			},
-		},
-	}
-	if err := conn.WriteJSON(initMsg); err != nil {
-		fmt.Fprintf(os.Stderr, "エラー: 初期化メッセージの送信に失敗しました: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("初期化メッセージを送信しました。")
-
-	// 4) 音声ペイロード送信
-	audioEvt := map[string]any{
-		"type":  "input_audio_buffer.append",
-		"audio": audioB64,
-	}
-	if err := conn.WriteJSON(audioEvt); err != nil {
-		fmt.Fprintf(os.Stderr, "エラー: 音声データの送信に失敗しました: %v\n", err)
-		os.Exit(1)
-	}
-	if err := conn.WriteJSON(map[string]any{"type": "input_audio_buffer.commit"}); err != nil {
-		fmt.Fprintf(os.Stderr, "エラー: 音声コミットの送信に失敗しました: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("音声データを送信しました。応答を待っています...")
-
-	// 5) 応答受信
-	var result EmotionResult
-	jsonStr := ""
-readLoop:
-	for {
-		if ctx.Err() != nil {
-			fmt.Fprintln(os.Stderr, "エラー: タイムアウトしました。")
-			os.Exit(1)
-		}
-
-		_, msg, err := conn.ReadMessage()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "エラー: メッセージの受信に失敗しました: %v\n", err)
-			os.Exit(1)
-		}
-
-		var env struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal(msg, &env); err != nil {
-			fmt.Fprintf(os.Stderr, "警告: 不明なメッセージをデコードできませんでした: %v\n", err)
-			continue
-		}
-
-		switch env.Type {
-		case "response.text.delta":
-			var delta struct {
-				Delta string `json:"delta"`
-			}
-			if err := json.Unmarshal(msg, &delta); err == nil {
-				jsonStr += delta.Delta
-			}
-		case "response.done", "response.completed": // 互換性のため両方見る
-			fmt.Println("分析が完了しました。")
-			break readLoop
-		case "error":
-			fmt.Fprintf(os.Stderr, "エラー: APIからエラーが返されました: %s\n", string(msg))
-			os.Exit(1)
-		}
-	}
-
-	// 6) JSONの抽出とパース
-	fullJSON := extractJSON(jsonStr)
-	if err := json.Unmarshal([]byte(fullJSON), &result); err != nil {
-		fmt.Fprintf(os.Stderr, "エラー: 結果JSONのパースに失敗しました: %v\n", err)
-		fmt.Fprintf(os.Stderr, "受信した文字列: %s\n", jsonStr)
+		fmt.Fprintf(os.Stderr, "エラー: 感情分析に失敗しました: %v\n", err)
 		os.Exit(1)
 	}
 
-	// 7) Markdownレポートを生成してファイルに書き込む
-	if err := writeMarkdownReport(result, *outFile); err != nil {
+	// 3) Markdownレポートを生成してファイルに書き込む
+	if err := writeMarkdownReport(*result, *outFile); err != nil {
 		fmt.Fprintf(os.Stderr, "エラー: レポートの書き込みに失敗しました: %v\n", err)
 		os.Exit(1)
 	}
@@ -232,29 +134,128 @@ readLoop:
 	fmt.Println("正常に完了しました。レポートが", *outFile, "に保存されました。")
 }
 
-func getSchema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"version":   map[string]any{"type": "string"},
-			"model":     map[string]any{"type": "string"},
-			"language":  map[string]any{"type": "string"},
-			"emotions":  map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "number"}},
-			"valence":   map[string]any{"type": "number"},
-			"arousal":   map[string]any{"type": "number"},
-			"dominance": map[string]any{"type": "number"},
-			"notes":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"speaking_rate": map[string]any{"type": "number"},
-			"avg_pitch_hz":  map[string]any{"type": "number"},
-			"energy_proxy":  map[string]any{"type": "number"},
-			"silence_ratio": map[string]any{"type": "number"},
+func analyzeEmotionWithGPT4oAudio(apiKey string, audioB64 string) (*EmotionResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// リクエストボディを構築
+	requestBody := map[string]interface{}{
+		"model": "gpt-4o-audio-preview",
+		"messages": []map[string]interface{}{
+			{
+				"role": "user",
+				"content": []map[string]interface{}{
+					{
+						"type": "text",
+						"text": "次の音声の話者感情を推定し、指定のJSONスキーマにstrict準拠で返してください。\n- emotions: joy,sadness,anger,fear,surprise,disgust,neutral を 0.0〜1.0\n- valence(-1..+1), arousal(0..1), dominance(0..1)\n- 音響上の傾向も可能なら出す（speaking_rate, avg_pitch_hz など）\n- notes は日本語で短く根拠を書く",
+					},
+					{
+						"type":   "input_audio",
+						"data":   audioB64,
+						"format": "wav",
+					},
+				},
+			},
 		},
-		"required": []string{"version", "model", "language", "emotions", "valence", "arousal", "dominance"},
+		"response_format": map[string]interface{}{
+			"type": "json_schema",
+			"json_schema": map[string]interface{}{
+				"name":   "EmotionResult",
+				"strict": true,
+				"schema": getSchema(),
+			},
+		},
+	}
+
+	// JSONにエンコード
+	bodyBytes, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("リクエストボディのJSONエンコードに失敗: %w", err)
+	}
+
+	// HTTPリクエストを作成
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("HTTPリクエストの作成に失敗: %w", err)
+	}
+
+	// ヘッダを設定
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	// リクエストを送信
+	fmt.Println("gpt-4o-audio APIにリクエストを送信中...")
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("APIリクエストに失敗: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// レスポンスボディを読み込む
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("レスポンスボディの読み込みに失敗: %w", err)
+	}
+
+	// ステータスコードをチェック
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("APIエラー (ステータスコード: %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	// レスポンスをパース
+	var chatResponse struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+
+	if err := json.Unmarshal(respBody, &chatResponse); err != nil {
+		return nil, fmt.Errorf("レスポンスJSONのパースに失敗: %w", err)
+	}
+
+	if len(chatResponse.Choices) == 0 {
+		return nil, fmt.Errorf("APIがmessagesを返しませんでした")
+	}
+
+	// JSONの抽出とパース
+	content := chatResponse.Choices[0].Message.Content
+	fullJSON := extractJSON(content)
+
+	var result EmotionResult
+	if err := json.Unmarshal([]byte(fullJSON), &result); err != nil {
+		return nil, fmt.Errorf("結果JSONのパースに失敗: %w (内容: %s)", err, fullJSON)
+	}
+
+	fmt.Println("分析が完了しました。")
+	return &result, nil
+}
+
+func getSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"version":       map[string]interface{}{"type": "string"},
+			"model":         map[string]interface{}{"type": "string"},
+			"language":      map[string]interface{}{"type": "string"},
+			"emotions":      map[string]interface{}{"type": "object", "additionalProperties": map[string]interface{}{"type": "number"}},
+			"valence":       map[string]interface{}{"type": "number"},
+			"arousal":       map[string]interface{}{"type": "number"},
+			"dominance":     map[string]interface{}{"type": "number"},
+			"notes":         map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+			"speaking_rate": map[string]interface{}{"type": "number"},
+			"avg_pitch_hz":  map[string]interface{}{"type": "number"},
+			"energy_proxy":  map[string]interface{}{"type": "number"},
+			"silence_ratio": map[string]interface{}{"type": "number"},
+		},
+		"required":             []string{"version", "model", "language", "emotions", "valence", "arousal", "dominance"},
 		"additionalProperties": false,
 	}
 }
 
-// extractJSON は、APIからのストリームデータに含まれるJSON部分を抽出します。
+// extractJSON は、APIからの応答に含まれるJSON部分を抽出します。
 func extractJSON(raw string) string {
 	start := strings.Index(raw, "{")
 	end := strings.LastIndex(raw, "}")
