@@ -150,9 +150,11 @@ func analyzeEmotionWithGPT4oAudio(apiKey string, audioB64 string) (*EmotionResul
 						"text": "次の音声の話者感情を推定し、指定のJSONスキーマにstrict準拠で返してください。\n- emotions: joy,sadness,anger,fear,surprise,disgust,neutral を 0.0〜1.0\n- valence(-1..+1), arousal(0..1), dominance(0..1)\n- 音響上の傾向も可能なら出す（speaking_rate, avg_pitch_hz など）\n- notes は日本語で短く根拠を書く",
 					},
 					{
-						"type":   "input_audio",
-						"data":   audioB64,
-						"format": "wav",
+						"type": "input_audio",
+						"input_audio": map[string]interface{}{
+							"data":   audioB64,
+							"format": "wav",
+						},
 					},
 				},
 			},
