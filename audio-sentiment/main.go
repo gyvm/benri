@@ -95,7 +95,7 @@ func main() {
 	}
 
 	outputFlag := flag.String("o", "", "出力するMarkdownファイルのパス")
-	modelFlag := flag.String("m", "models/gemini-pro-latest", "使用するAIモデル名")
+	modelFlag := flag.String("m", "models/gemini-2.5-pro", "使用するAIモデル名")
 	flag.Parse()
 
 	if flag.NArg() < 1 {
