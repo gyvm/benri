@@ -208,7 +208,7 @@ func runAnalysis() {
 }
 
 func analyzeEmotionWithGPT4oAudio(apiKey string, audioB64 string, audioFormat string) (*SentimentReport, string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	// プロンプトを生成
@@ -255,7 +255,8 @@ func analyzeEmotionWithGPT4oAudio(apiKey string, audioB64 string, audioFormat st
 
 	// リクエストを送信
 	fmt.Println("gpt-4o-audio APIにリクエストを送信中...")
-	client := &http.Client{Timeout: 30 * time.Second}
+	fmt.Println("（大容量ファイルの場合、処理に数分かかる場合があります）")
+	client := &http.Client{Timeout: 2 * time.Minute}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, "", fmt.Errorf("APIリクエストに失敗: %w", err)
