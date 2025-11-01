@@ -104,19 +104,30 @@ func countLines(content string) (totalLines, loc int) {
 }
 
 // aggregateStats groups file stats by package (directory).
-func aggregateStats(files []*FileStats) map[string]*PackageStats {
+func aggregateStats(files []*FileStats, root string, depth int) map[string]*PackageStats {
 	packages := make(map[string]*PackageStats)
+	rootAbs, _ := filepath.Abs(root)
 
 	for _, file := range files {
-		dir := filepath.Dir(file.Path)
-		if dir == "." {
-			dir = "main" // Group root files under 'main'
+		absPath, _ := filepath.Abs(file.Path)
+		relPath, err := filepath.Rel(rootAbs, absPath)
+		if err != nil {
+			relPath = file.Path // fallback
 		}
-
+		dir := filepath.Dir(relPath)
+		if dir == "." {
+			dir = "main"
+		}
+		// depth制限
+		if depth > 0 {
+			parts := strings.Split(dir, string(os.PathSeparator))
+			if len(parts) > depth {
+				dir = strings.Join(parts[:depth], string(os.PathSeparator))
+			}
+		}
 		if _, ok := packages[dir]; !ok {
 			packages[dir] = &PackageStats{Name: dir}
 		}
-
 		pkg := packages[dir]
 		pkg.Files++
 		pkg.Lines += file.Lines

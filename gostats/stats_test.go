@@ -8,12 +8,12 @@ import (
 
 func TestFindGoFiles(t *testing.T) {
 	// Test without including test files
-	files, err := findGoFiles("testdata", false)
+	files, err := findGoFiles("testdata", false, false, []string{})
 	assert.NoError(t, err)
 	assert.ElementsMatch(t, []string{"testdata/simple/main.go", "testdata/comments/code.go"}, files)
 
 	// Test with including test files
-	files, err = findGoFiles("testdata", true)
+	files, err = findGoFiles("testdata", true, false, []string{})
 	assert.NoError(t, err)
 	assert.ElementsMatch(t, []string{"testdata/simple/main.go", "testdata/simple/main_test.go", "testdata/comments/code.go"}, files)
 }
