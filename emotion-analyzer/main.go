@@ -118,8 +118,16 @@ func runAnalysis() {
 	audioB64 := base64.StdEncoding.EncodeToString(raw)
 	fmt.Printf("音声ファイルを読み込みました (%d bytes)\n", len(raw))
 
+	// ファイル拡張子からオーディオフォーマットを判定
+	ext := strings.ToLower(filepath.Ext(inFile))
+	audioFormat := "wav" // デフォルトは wav
+	if ext == ".mp3" {
+		audioFormat = "mp3"
+	}
+	fmt.Printf("オーディオフォーマット: %s\n", audioFormat)
+
 	// 2) gpt-4o-audio API にリクエストを送信
-	result, err := analyzeEmotionWithGPT4oAudio(apiKey, audioB64)
+	result, err := analyzeEmotionWithGPT4oAudio(apiKey, audioB64, audioFormat)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "エラー: 感情分析に失敗しました: %v\n", err)
 		os.Exit(1)
@@ -134,7 +142,7 @@ func runAnalysis() {
 	fmt.Println("正常に完了しました。レポートが", *outFile, "に保存されました。")
 }
 
-func analyzeEmotionWithGPT4oAudio(apiKey string, audioB64 string) (*EmotionResult, error) {
+func analyzeEmotionWithGPT4oAudio(apiKey string, audioB64 string, audioFormat string) (*EmotionResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -153,7 +161,7 @@ func analyzeEmotionWithGPT4oAudio(apiKey string, audioB64 string) (*EmotionResul
 						"type": "input_audio",
 						"input_audio": map[string]interface{}{
 							"data":   audioB64,
-							"format": "wav",
+							"format": audioFormat,
 						},
 					},
 				},
