@@ -1,6 +1,6 @@
 # emotion-analyzer
 
-`emotion-analyzer` は、音声ファイルから話者の感情を分析し、レポートを生成するCLIツールです。OpenAIのリアルタイム音声APIを利用して、音声データを直接解析し、感情のスコアや関連する音響特徴を抽出します。
+`emotion-analyzer` は、音声ファイルから話者の感情を分析し、レポートを生成するCLIツールです。OpenAIの gpt-4o-audio-preview モデルを利用して、音声データを直接解析し、感情のスコアや関連する音響特徴を抽出します。
 
 ## 主な機能
 
@@ -76,3 +76,36 @@ Go言語の環境が設定されていることを前提とします。
 ```bash
 ./emotion-analyzer -h
 ```
+
+## 技術仕様
+
+このツールは OpenAI の **gpt-4o-audio-preview** モデルを使用して感情分析を行います。
+
+- **エンドポイント**: `https://api.openai.com/v1/messages`
+- **入力形式**: Base64 エンコードされた音声データ
+- **出力形式**: JSON Schema による構造化レスポンス
+- **対応フォーマット**: WAV, MP3, M4A, FLAC, OGG
+
+### 分析結果に含まれる項目
+
+- **version**: スキーマバージョン
+- **model**: 使用したモデル名
+- **language**: 推定される話者の言語
+- **emotions**: 感情スコア
+  - joy (喜び): 0.0～1.0
+  - sadness (悲しみ): 0.0～1.0
+  - anger (怒り): 0.0～1.0
+  - fear (恐れ): 0.0～1.0
+  - surprise (驚き): 0.0～1.0
+  - disgust (嫌悪): 0.0～1.0
+  - neutral (中立): 0.0～1.0
+- **VAD モデル** (連続感情モデル)
+  - valence (快-不快): -1.0～+1.0
+  - arousal (覚醒-睡眠): 0.0～1.0
+  - dominance (優位-劣位): 0.0～1.0
+- **notes**: 分析の根拠に関する短い注記（日本語）
+- **音響分析** (オプション)
+  - speaking_rate: 話速（単語/分）
+  - avg_pitch_hz: 平均ピッチ（Hz）
+  - energy_proxy: エネルギープロキシ
+  - silence_ratio: 無音比率
