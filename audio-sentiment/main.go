@@ -18,10 +18,11 @@ import (
 
 // --- APIレスポンス用の構造体 ---
 type SentimentReport struct {
-	OverallSentiment     OverallSentiment      `json:"overall_sentiment"`
+	OverallSentiment     OverallSentiment       `json:"overall_sentiment"`
 	SentimentComposition []SentimentComposition `json:"sentiment_composition"`
-	Transcript           string                `json:"transcript"`
-	TimedAnalysis        []TimedAnalysis       `json:"timed_analysis"`
+	Transcript           string                 `json:"transcript"`
+	DiarizedTranscript   string                 `json:"diarized_transcript,omitempty"`
+	TimedAnalysis        []TimedAnalysis        `json:"timed_analysis"`
 }
 type OverallSentiment struct {
 	Sentiment string `json:"sentiment"`
@@ -38,6 +39,92 @@ type TimedAnalysis struct {
 	Keywords  string `json:"keywords"`
 }
 
+// buildPromptは話者分離オプションに基づいてプロンプトを生成します。
+func buildPrompt(diarize bool) string {
+	basePrompt := `
+以下の音声データを分析し、指定された形式で感情分析レポートを生成してください。
+
+出力形式はマークダウンのコードブロックを使わず、純粋なJSONオブジェクトのみとしてください。
+
+感情ラベルについて：
+- 以下は感情分析で使用できるラベルの例です。これらに限定されません。音声の内容に応じて、より適切な感情を自由に選択してください。
+- 基本的な感情：喜び、悲しみ、怒り、恐怖、驚き、嫌悪、中立、期待
+- ポジティブ感情：楽観的、愛情、感謝、満足、希望、安心、誇り、興奮
+- ネガティブ感情：失望、後悔、不安、焦り、疲れ、イライラ、沈み込み、虚無感
+- その他：迷い、困惑、同情、尊敬、興味、好奇心など
+`
+
+	baseSchema := `
+JSONスキーマ：
+{
+  "overall_sentiment": {
+    "sentiment": "ポジティブ | ネガティブ | ニュートラル（音声全体の総合的な感情分類）",
+    "summary": "感情の理由の短い要約"
+  },
+  "sentiment_composition": [
+    {"sentiment": "喜び", "score": 35},
+    {"sentiment": "楽観的", "score": 30},
+    {"sentiment": "期待", "score": 20},
+    {"sentiment": "中立", "score": 15}
+  ],
+  "transcript": "音声の完全な文字起こしテキスト。",
+  "timed_analysis": [
+    {
+      "timestamp": "00:00-00:03",
+      "utterance": "こんにちは、今日はとても良い天気ですね。",
+      "sentiment": "喜び",
+      "keywords": "良い天気、明るい"
+    }
+  ]
+}
+`
+
+	diarizeSchema := `
+JSONスキーマ（話者分離有効時）：
+{
+  "overall_sentiment": {
+    "sentiment": "ポジティブ | ネガティブ | ニュートラル（音声全体の総合的な感情分類）",
+    "summary": "感情の理由の短い要約"
+  },
+  "sentiment_composition": [
+    {"sentiment": "喜び", "score": 35},
+    {"sentiment": "楽観的", "score": 30},
+    {"sentiment": "期待", "score": 20},
+    {"sentiment": "中立", "score": 15}
+  ],
+  "transcript": "音声の完全な文字起こしテキスト。",
+  "diarized_transcript": "[話者A] こんにちは。今日はいい天気ですね。\n[話者B] そうですね。本当にいい天気です。\n[話者A] また明日も良い天気が続くといいですね。",
+  "timed_analysis": [
+    {
+      "timestamp": "00:00-00:03",
+      "utterance": "こんにちは、今日はとても良い天気ですね。",
+      "sentiment": "喜び",
+      "keywords": "良い天気、明るい"
+    }
+  ]
+}
+`
+
+	notes := `
+重要：
+- sentiment_composition内の各感情のscoreは0-100の値を指定し、合計が100になるようにしてください。
+- もしタイムスタンプの取得が不可能であれば、"timed_analysis" は空の配列 '[]' にしてください。
+`
+
+	if diarize {
+		diarizeNotes := `
+話者分離について：
+- "diarized_transcript"フィールドに話者分離を行った文字起こしを含めてください。
+- 各発言の先頭に [話者A]、[話者B]、[話者C] などのラベルを付けてください。
+- 複数の話者が検出された場合は、自然な割り当てで対応してください。
+- 改行で複数の発言を区切ってください。
+`
+		return basePrompt + diarizeSchema + diarizeNotes + notes
+	}
+
+	return basePrompt + baseSchema + notes
+}
+
 // getMimeTypeはファイルパスからMIMEタイプを判別します。
 func getMimeType(filePath string) string {
 	ext := strings.ToLower(filepath.Ext(filePath))
@@ -52,7 +139,7 @@ func getMimeType(filePath string) string {
 }
 
 // generateMarkdownはSentimentReportからMarkdown文字列を生成します。
-func generateMarkdown(report SentimentReport, audioFilePath, modelName string) string {
+func generateMarkdown(report SentimentReport, audioFilePath, modelName, apiResponseBody string) string {
 	var md strings.Builder
 
 	md.WriteString("# 感情分析レポート\n\n")
@@ -84,7 +171,19 @@ func generateMarkdown(report SentimentReport, audioFilePath, modelName string) s
 
 	md.WriteString("---\n\n")
 	md.WriteString("## 音声の文字起こし\n\n")
-	md.WriteString(fmt.Sprintf("```text\n%s\n```\n", report.Transcript))
+	md.WriteString(fmt.Sprintf("```text\n%s\n```\n\n", report.Transcript))
+
+	if report.DiarizedTranscript != "" {
+		md.WriteString("---\n\n")
+		md.WriteString("## 話者分離済み文字起こし\n\n")
+		md.WriteString(fmt.Sprintf("```text\n%s\n```\n\n", report.DiarizedTranscript))
+	}
+
+	md.WriteString("---\n\n")
+	md.WriteString("## APIレスポンス\n\n")
+	md.WriteString("```json\n")
+	md.WriteString(apiResponseBody)
+	md.WriteString("\n```\n")
 
 	return md.String()
 }
@@ -96,6 +195,7 @@ func main() {
 
 	outputFlag := flag.String("o", "", "出力するMarkdownファイルのパス")
 	modelFlag := flag.String("m", "models/gemini-2.5-pro", "使用するAIモデル名")
+	diarizeFlag := flag.Bool("d", false, "話者分離を有効にするフラグ")
 	flag.Parse()
 
 	if flag.NArg() < 1 {
@@ -134,33 +234,8 @@ func main() {
 
 	model := client.GenerativeModel(*modelFlag)
 
-	prompt := `
-以下の音声データを分析し、指定された形式で感情分析レポートを生成してください。
-
-出力形式はマークダウンのコードブロックを使わず、純粋なJSONオブジェクトのみとしてください。
-{
-  "overall_sentiment": {
-    "sentiment": "ポジティブ | ネガティブ | ニュートラル",
-    "summary": "感情の理由の短い要約"
-  },
-  "sentiment_composition": [
-    {"sentiment": "喜び", "score": 85},
-    {"sentiment": "驚き", "score": 10},
-    {"sentiment": "中立", "score": 5}
-  ],
-  "transcript": "音声の完全な文字起こしテキスト。",
-  "timed_analysis": [
-    {
-      "timestamp": "00:00-00:03",
-      "utterance": "こんにちは、今日はとても良い天気ですね。",
-      "sentiment": "喜び",
-      "keywords": "良い天気"
-    }
-  ]
-}
-
-もしタイムスタンプの取得が不可能であれば、"timed_analysis" は空の配列 '[]' にしてください。
-`
+	// 話者分離オプションに応じてプロンプトを生成
+	prompt := buildPrompt(*diarizeFlag)
 
 	fmt.Println("APIにリクエストを送信しています...")
 	resp, err := model.GenerateContent(ctx, genai.Text(prompt), genai.Blob{MIMEType: mimeType, Data: audioData})
@@ -192,7 +267,7 @@ func main() {
 	}
 
 	// Markdownを生成
-	markdownContent := generateMarkdown(report, audioFilePath, *modelFlag)
+	markdownContent := generateMarkdown(report, audioFilePath, *modelFlag, apiResponseText)
 
 	// ファイルに書き込み
 	if err := os.WriteFile(outputFilePath, []byte(markdownContent), 0644); err != nil {
